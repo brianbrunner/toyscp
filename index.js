@@ -1,5 +1,7 @@
 const crypto = require('crypto');
 
+NULL_BALLOT = [0,null];
+
 class Node {
     constructor(id, options) {
         this._id = id;
@@ -7,33 +9,63 @@ class Node {
         this._roundLength = options.roundLength || 3000;
         this._pendingTxs = [];
         this._txNum = 0;
+        this._slots = {};
     }
 
-    setPeers(peers) {
+    setQuorum(peers) {
+        if (!peers.find(peer => peer._id == this._id)) {
+            peers.push(this);
+        }
         this._peers = peers;
     }
 
     start() {
-        this.doLedgerClose();
+        this.closeLedger();
         setInterval(() => {
             this.makeNoise();
         }, 100);
     }
 
-    compositeValue() {
-        
+    initSlot(id) {
+        this._slots[id] = {
+            nominate: {
+                votes: [],
+                accepted: [],
+                candidates: [],
+                nominations: {}
+            },
+            ballot: {
+                phase: "PREPARE",
+                ballot: NULL_BALLOT,
+                pp: NULL_BALLOT,
+                p: NULL_BALLOT,
+                c: NULL_BALLOT,
+                h: NULL_BALLOT,
+                z: null,
+                other_ballots: {}
+            }
+        }
     }
 
-    doLedgerClose() {
-        console.log(`Closing ledger ${this.currentBallot()} for ${this._id}`)
+    closeLedger() {
+        console.log(`Closing ledger ${this.currentSlot()} for ${this._id}`)
         if (this._pendingTxs.length > 0) {
-            this.nominate(
+            this.initSlot(this.currentSlot());
+            this.nominate();
         }
+        this._pendingTxs = [];
 
         const delay = this.nextLedgerTime() - Date.now();
         setTimeout(() => {
-            this.doLedgerClose();
+            this.closeLedger();
         }, delay);
+    }
+
+    nominate() {
+        const message = {
+            slot: this.currentSlot(),
+            
+        }
     }
 
     nextLedgerTime() {
@@ -41,21 +73,19 @@ class Node {
         return now - (now % this._roundLength) + this._roundLength;
     }
 
-    currentBallot() {
+    currentSlot() {
         return Math.floor((Date.now() - this._startTime)/this._roundLength)
     }
 
     prioritizedPeers() {
-        return this._peers.map(function() {
+        return this._peers.map(peer => {
             return {
                 peer: peer,
-                priority: crypto.createHash('sha256').update(peer._id, this._currentBallot).digest()
+                priority: crypto.createHash('sha256').update(String(peer._id), this._currentSlot).digest()
             }
-        }).sort(function(a,b) {
+        }).sort((a,b) => {
             return (a.priority < b.priority) ? 1 : -1;
-        }).map(function(priorityPeer) {
-            return priorityPeer.peer;
-        });
+        }).map(priorityPeer => priorityPeer.peer);
     }
 
     broadcast(topic, data) {
@@ -69,14 +99,12 @@ class Node {
         switch(topic) {
             case 'tx':
                 // In real life, validate tx first
-                this._pendingTransactions.push(data);
+                this._pendingTxs.push(data);
+                break;
             case 'nominate':
                 // In real life, verify signature of nomination
-                const prioritizedPeers = this.prioritizedPeers();
-                if (prioritizedPeers[0].id == data.id) {
-                } else {
-                    this._pendingNominations[data.id] = data;
-                }
+                if (this.isNewerNomination(data) && 
+                this._pendingNominations[data.id] = data;
                 break;
             case 'prepare':
 
@@ -110,12 +138,10 @@ const n1 = new Node(1, options);
 const n2 = new Node(2, options);
 const n3 = new Node(3, options);
 const n4 = new Node(4, options);
-const n5 = new Node(5, options);
-const n6 = new Node(6, options);
-n1.setPeers([n2,n3,n4]);
-n2.setPeers([n1,n3,n4]);
-n3.setPeers([n1,n2,n4]);
-n4.setPeers([n1,n2,n3]);
+n1.setQuorum([n1,n3,n4]);
+n2.setQuorum([n1,n3,n4]);
+n3.setQuorum([n1,n2,n4]);
+n4.setQuorum([n1,n2,n3]);
 
 n1.start();
 n2.start();
