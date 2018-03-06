@@ -13,7 +13,9 @@ function deepContains(arr, search) {
 }
 
 class Slot {
-    constructor() {
+    constructor(index, node) {
+        this._index = index;
+        this._node = node;
         this.nominate = {
             latestData: {}
             votes: [],
@@ -32,6 +34,43 @@ class Slot {
             z: null,
             other_ballots: {}
         }
+    }
+
+    /**
+     * Methods For Establishing Consensus
+     */
+
+    roundLeaderIds() {
+        if (!this._roundLeaderIds) {
+            const prioritizedPeers = this.node.prioritizedPeers(this._index);
+            this._roundLeaderIds = prioritizedPeers.filter(peer => peer.priority === prioritizedPeers[0].priority);
+        }
+        return this._roundLeaderIds;
+    }
+
+    federatedAccept(votesNodesFn, acceptedNodesFn, vote) {
+
+        const acceptedNodeIds = acceptedNodesFn(vote);
+
+        if (this._node.isVBlocking(acceptedNodeIds)) {
+            return true;
+        }
+
+        const combinedNodeIds = votesNodesFn(vote);
+        acceptedNodeIds.filter(id => combinedNodeIds.indexOf(id) === -1)
+            .forEach(id => combinedNodeIds.push(id));
+
+        if (this._node.isQuorumSlice(combinedNodeIds)) {
+            return true;
+        }
+
+        return false;
+
+    }
+
+    federatedRatify(acceptedNodesFn, vote) {
+        const acceptedNodeIds = acceptedNodesFn(vote);
+        return this._node.isQuorumSlice(acceptedNodeIds);
     }
 
     /**
@@ -81,31 +120,20 @@ class Slot {
         this.nominate.latestData[data.from] = data;
     }
 
-    federatedAccept(vote) {
-
-        const acceptedNodeIds = this.nominate.nominations
+    nominateAcceptedNodesFn(vote) {
+        return this.nominate.nominations
             .filter(nomination => deepContains(nomination.accepted, vote))
             .map(nomination => nomination.from);
+    }
 
-        if (this.node.isVBlocking(acceptedNodeIds)) {
-            return true;
-        }
-
-        const combinedNodeIds = this.nominate.nominations
-            .filter(nomination => deepContains(nomination.accepted, vote) || deepContains(nomination.votes, vote))
+    nominateVotesNodesFn(vote) {
+        return this.nominate.nominations
+            .filter(nomination => deepContains(nomination.votes, vote))
             .map(nomination => nomination.from);
-
-        if (this.node.isQuorumSlice(combinedNodeIds)) {
-            return true;
-        }
-
-        return false;
-
     }
 
     processNomination(data) {
     
-        
         if (this.isNewerStatement(data)) {
 
             if (this.isSane(data)) {
@@ -123,7 +151,9 @@ class Slot {
                             return;
                         }
 
-                        if (this.federatedAccept(vote)) {
+                        if (this.federatedAccept(this.nominateAcceptedNodesFn.bind(this), 
+                                this.nominateVotesNodesFn.bind(this),
+                                vote)) {
 
                             // In the real world, we would validate the value here
                             this.nominate.votes.push(vote);
@@ -140,22 +170,54 @@ class Slot {
                             return;
                         }
 
-                        if (this.federatedRatify(vote)) {
+                        if (this.federatedRatify(this.nominateAcceptedNodesFn.bind(this), vote)) {
                             this.nominate.candidates.push(vote);
                             newCandidates = true;
                         }
 
-                        if (this.nominate.candidates.length === 0
-                                && this.roundLeaderIds().indexOf(data.from) !== -1) {
-                            // TODO work here
-                        }
-
                     });
+
+                    if (this.nominate.candidates.length === 0
+                            && this.roundLeaderIds().indexOf(data.from) !== -1) {
+                        const newVote = this.getNewValueFromNomination(data);
+                        if (newVote) {
+                            this.nominate.votes.push(newVote);
+                            modified = true;
+                            this.node.nominatingValue(this._index, newVote);
+                        }
+                    }
+
+                    if (modified) {
+                        this.emitNomination();
+                    }
+
+                    if (newCandidates) {
+                        const latestCompositeCandidate = this.node.combineCandidates(this.index, this.nominate.candidates);
+                        this.node.updatedCompositeCandidate(latestCompositeCandidate);
+                        this.bumpState(latestCompositeCandidate, false);
+                    }
 
                 }
             }
         }
 
+    }
+
+    getNewValueFromNomination(nomination) {
+        var newVote;
+        var newHash = '';
+
+        nomination.votes
+            .concat(nomination.accepted)
+            .forEach(vote => {
+                if (!deepContains(this.votes, vote)) {
+                    const hash = crypto.createHash('sha256').update(String(peer._id), slotId).digest()
+                    if (hash > newHash) {
+                        newVote = vote;
+                    }
+                }
+            });
+        return newVote;
     }
 
     /**
@@ -194,7 +256,7 @@ class Node {
 
     getSlot(id) {
         if (!this._slots[id]) {
-            this._slots[id] = new Slot();
+            this._slots[id] = new Slot(id, this);
         }
         return this._slots[id];
     }
@@ -229,7 +291,7 @@ class Node {
             }
         }).sort((a,b) => {
             return (a.priority < b.priority) ? 1 : -1;
-        }).map(priorityPeer => priorityPeer.peer);
+        });
     }
 
     broadcast(topic, data) {
