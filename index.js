@@ -3,9 +3,12 @@
 // * There is no ability to designate subquorums, just peers
 // * Threshold for a quorum isn't customizable, locked at 50% agreement
 
+const assert = require('assert');
 const crypto = require('crypto');
 
-NULL_BALLOT = [0,null];
+function deepEquals(a,b) {
+    return JSON.stringify(a) == JSON.stringify(b);
+}
 
 function deepContains(arr, search) {
     const jsonSearch = JSON.stringify(search);
@@ -16,72 +19,39 @@ function clone(obj) {
     return JSON.parse(JSON.stringify(obj));
 }
 
-class Slot {
-    constructor(index, node) {
-        this.index = index;
-        this.node = node;
+function isQuorumSetSane(quorumSet, extraChecks) {
+
+}
+
+const VALUE_STATE = {
+    VALID: 'valid',
+    INVALID: 'invalid',
+    MAYBE_VALID: 'maybe_valid'
+}
+
+class NominationProtocol {
+
+    constructor(slot) {
+        this.slot = slot;
 
         this.nominationStarted = false;
         this.roundNumber = 0;
-        this.nomination = {
-            votes: [],
-            accepted: [],
-            candidates: [],
-            nominations: {}
-        }
+        this.votes = []
+        this.accepted = [],
+        this.candidates = [],
+        this.nominations = {}
 
-        this.ballot = {
-            phase: "PREPARE",
-            ballot: NULL_BALLOT,
-            pp: NULL_BALLOT,
-            p: NULL_BALLOT,
-            c: NULL_BALLOT,
-            h: NULL_BALLOT,
-            z: null,
-            other_ballots: {}
-        }
     }
 
-    /**
-     * Methods For Establishing Consensus
-     */
+    stopNomination() {
+        this.nominationStarted = false;
+    }
 
     updateRoundLeaderIds() {
-        const prioritizedPeers = this.node.prioritizedPeers(this.index, this.roundNumber);
+        const prioritizedPeers = this.slot.node.prioritizedPeers(this.slot.index, this.roundNumber);
         this.roundLeaderIds = prioritizedPeers.filter(peer => peer.priority === prioritizedPeers[0].priority)
             .map(prioritizedPeer => prioritizedPeer.peer.id);
     }
-
-    federatedAccept(votesNodesFn, acceptedNodesFn, vote) {
-
-        const acceptedNodeIds = acceptedNodesFn(vote);
-
-        console.log('ACCEPTED IDS', acceptedNodeIds);
-        if (this.node.isVBlocking(acceptedNodeIds)) {
-            return true;
-        }
-
-        const combinedNodeIds = votesNodesFn(vote);
-        acceptedNodeIds.filter(id => combinedNodeIds.indexOf(id) === -1)
-            .forEach(id => combinedNodeIds.push(id));
-
-        console.log('COMBINED IDS', combinedNodeIds);
-        if (this.node.isQuorumSlice(combinedNodeIds)) {
-            return true;
-        }
-
-        return false;
-
-    }
-
-    federatedRatify(acceptedNodesFn, vote) {
-        const acceptedNodeIds = acceptedNodesFn(vote);
-        return this.node.isQuorumSlice(acceptedNodeIds);
-    }
-
-    /**
-     * Nomination Protocol 
-     */
 
     isSubset(a, b) {
         return a.length <= b.length &&
@@ -90,7 +60,7 @@ class Slot {
 
     isNewerStatement(data, old) {
         if (!old) {
-            old = this.nomination.nominations[data.from];
+            old = this.nominations[data.from];
         }
         if (old) {
             if (this.isSubset(old.votes, data.votes)
@@ -125,24 +95,24 @@ class Slot {
     }
 
     recordData(data) {
-        this.nomination.nominations[data.from] = data;
+        this.nominations[data.from] = data;
     }
 
-    nominationAcceptedNodesFn(vote) {
-        return Object.values(this.nomination.nominations)
+    acceptedNodesFn(vote) {
+        return Object.values(this.nominations)
             .filter(nomination => deepContains(nomination.accepted, vote))
             .map(nomination => nomination.from);
     }
 
-    nominationVotesNodesFn(vote) {
-        return Object.values(this.nomination.nominations)
+    votesNodesFn(vote) {
+        return Object.values(this.nominations)
             .filter(nomination => deepContains(nomination.votes, vote))
             .map(nomination => nomination.from);
     }
 
     processNomination(data) {
     
-        console.log(`Process nomination on ${this.node.id} for slot ${this.index} from ${data.from}`);
+        console.log(`Process nomination on ${this.slot.node.id} for slot ${this.slot.index} from ${data.from}`);
 
         var res = false;
 
@@ -160,17 +130,17 @@ class Slot {
 
                     data.votes.forEach(vote => {
 
-                        if (deepContains(this.nomination.accepted, vote)) {
+                        if (deepContains(this.accepted, vote)) {
                             return;
                         }
 
-                        if (this.federatedAccept(this.nominationAcceptedNodesFn.bind(this), 
-                                this.nominationVotesNodesFn.bind(this),
+                        if (this.slot.federatedAccept(this.acceptedNodesFn.bind(this), 
+                                this.votesNodesFn.bind(this),
                                 vote)) {
 
                             // In the real world, we would validate the value here
-                            this.nomination.votes.push(vote);
-                            this.nomination.accepted.push(vote);
+                            this.votes.push(vote);
+                            this.accepted.push(vote);
                             modified = true;
 
                         }
@@ -179,43 +149,46 @@ class Slot {
 
                     data.accepted.forEach(accepted => {
 
-                        if (deepContains(this.nomination.candidates, accepted)) {
+                        if (deepContains(this.candidates, accepted)) {
                             return;
                         }
 
-                        if (this.federatedRatify(this.nominationAcceptedNodesFn.bind(this), accepted)) {
-                            this.nomination.candidates.push(accepted);
+                        if (this.slot.federatedRatify(this.acceptedNodesFn.bind(this), accepted)) {
+                            this.candidates.push(accepted);
                             newCandidates = true;
                         }
 
                     });
 
-                    if (this.nomination.candidates.length === 0
+                    if (this.candidates.length === 0
                             && this.roundLeaderIds.indexOf(data.from) !== -1) {
                         const newVote = this.getNewValueFromNomination(data);
                         if (newVote) {
-                            this.nomination.votes.push(newVote);
+                            this.votes.push(newVote);
                             modified = true;
                         }
                     }
 
-                    console.log('CURRENT NOMINATION', this.nomination);
+                    console.log('CURRENT NOMINATION', {
+                        votes: this.votes,
+                        accepted: this.accepted,
+                        candidates: this.candidates,
+                        nominations: this.nominations
+                    });
 
                     if (modified) {
-                        console.log(`Emitting nomination for node ${this.node.id} for slot ${this.index}`);
+                        console.log(`Emitting nomination for node ${this.slot.node.id} for slot ${this.slot.index}`);
                         this.emitNomination();
                     }
 
                     if (newCandidates) {
-                        console.log(`New candidates for node ${this.node.id} for slot ${this.index}`);
-                        const latestCompositeCandidate = this.node.combineCandidates(this.index, this.nomination.candidates);
-                        // Combine tx sets by picking the latest timestamp and then the longest tx set
-                        // this.node.updatedCompositeCandidate(latestCompositeCandidate);
-                        this.bumpState(latestCompositeCandidate, false);
+                        console.log(`New candidates for node ${this.slot.node.id} for slot ${this.slot.index}`);
+                        const latestCompositeCandidate = this.slot.node.combineCandidates(this.slot.index, this.candidates);
+                        this.slot.bumpState(latestCompositeCandidate, false);
                     }
 
                     if (!modified && !newCandidates) {
-                        console.log(`No updates for node ${this.node.id} for slot ${this.index}`);
+                        console.log(`No updates for node ${this.slot.node.id} for slot ${this.slot.index}`);
                     }
 
                 }
@@ -223,14 +196,22 @@ class Slot {
         }
 
         if (!res) {
-            console.log('CURRENT NOMINATION', this.nomination);
+            console.log('CURRENT NOMINATION', {
+                votes: this.votes,
+                accepted: this.accepted,
+                candidates: this.candidates,
+                nominations: this.nominations
+            });
         }
 
         return res;
 
     }
 
-    nominate(value, previousValue, timedOut) {
+    nominate(value, timedOut) {
+        // Actual SCP cares about the previous value, but we're skipping that for
+        // the sake of simplicity. It might be wrong to do so, so feel free to open
+        // an issue if you have a concern about this
         var updated = false;
 
         if (timedOut && !this.nominationStarted) {
@@ -239,56 +220,56 @@ class Slot {
 
         this.nominationStarted = true;
 
-        this.previousValue = previousValue;
-
         this.roundNumber += 1;
         this.updateRoundLeaderIds();
 
         var nominatingValue;
 
-        if (this.roundLeaderIds.indexOf(this.node.id) !== -1) {
+        if (this.roundLeaderIds.indexOf(this.slot.node.id) !== -1) {
             nominatingValue = value;
-            if (!deepContains(this.nomination.votes, value)) {
+            if (!deepContains(this.votes, value)) {
                 updated = true;
-                this.nomination.votes.push(value);
+                this.votes.push(value);
             }
         } else {
             this.roundLeaderIds.forEach(id => {
-                const nomination = this.nomination.nominations[id];
+                const nomination = this.nominations[id];
                 if (nomination) {
                     nominatingValue = this.getNewValueFromNomination(nomination);
                     if (nominatingValue) {
                         updated = true;
-                        this.nomination.votes.push(value);
+                        this.votes.push(value);
                     }
                 }
             });
         }
 
         setTimeout(() => {
-            this.nominate(value, previousValue, true);
+            this.nominate(value, true);
         }, this.computeTimeout());
 
         if (updated) {
             this.emitNomination();
         } else {
-            console.log(`Nomintation skipped for node ${this.node.id} on slot ${this.index}`);
+            console.log(`Nomintation skipped for node ${this.slot.node.id} on slot ${this.slot.index}`);
         }
 
     }
 
     emitNomination() {
+        // In stellar-core, this emits an envelope up to the slot which then comes straight back
+        // into the nomination protocol. I've removed that step to make it easier to follow.
         const data = {
-            slot: this.index,
-            from: this.node.id,
-            votes: this.nomination.votes,
-            accepted: this.nomination.accepted,
-            quorumSetHash: this.node.quorumSetHash()
+            slot: this.slot.index,
+            from: this.slot.node.id,
+            votes: this.votes,
+            accepted: this.accepted,
+            quorumSetHash: this.slot.node.quorumSetHash()
         };
         if (this.processNomination(data)) {
             if (!this.lastData || this.isNewerStatement(data, this.lastData)) {
                 this.lastData = clone(data);
-                this.node.broadcast('nominate', data);
+                this.slot.node.broadcast('nominate', data);
             }
         }
     }
@@ -304,7 +285,7 @@ class Slot {
         nomination.votes
             .concat(nomination.accepted)
             .forEach(vote => {
-                if (!deepContains(this.nomination.votes, vote)) {
+                if (!deepContains(this.votes, vote)) {
                     const hash = crypto.createHash('sha256').update(JSON.stringify(vote)).digest('hex')
                     if (hash > newHash) {
                         newVote = vote;
@@ -314,31 +295,415 @@ class Slot {
         return newVote;
     }
 
-    /**
-     * Ballot Protocol 
-     */
 
-    processBallot() {
+}
 
+class Ballot {
+    constructor(counter, value) {
+        this.counter = counter;
+        this.value = value;
+    }
+}
+
+const BALLOT_PHASE = {
+    PREPARE: "prepare",
+    CONFIRM: "confirm",
+    EXTERNALIZE: "externalize"
+}
+BALLOT_PHASE.ORDERING = [
+    BALLOT_PHASE.PREPARE,
+    BALLOT_PHASE.CONFIRM,
+    BALLOT_PHASE.EXTERNALIZE
+];
+
+class BallotProtocol {
+    constructor(slot) {
+        this.slot = slot;
+
+        this.phase = BALLOT_PHASE.PREPARE
+        this.currentBallot = null
+        this.prepared = null
+        this.preparedPrime = null
+        this.highBallot = null
+        this.commit = null
+        this.otherBallots = {}
+    }
+
+    recordData(data) {
+        this.otherBallots[data.from] = data;
+    }
+
+    isNewerStatement(data, old) {
+        if (!old) {
+            old = this.otherBallots[data.from];
+        }
+        if (old) {
+
+            var res = false;
+
+            if (data.phase != old.phase) {
+                res = BALLOT_PHASE.ORDERING.indexOf(old.phase) < BALLOT_PHASE.ORDERING.indexOf(data.phase)
+            } else {
+                if (data.phase == BALLOT_PHASE.EXTERNALIZE) {
+                    res = false;
+                } else if (data.phase == BALLOT_PHASE.CONFIRM) {
+                    const compBallot = this.compareBallots(old.ballot, data.ballot);
+                    if (compBallot < 0) {
+                        res = true;
+                    } else if (compBallot == 0) {
+                        if (old.nPrepared == data.nPrepared) {
+                            res = (old.nH < data.nH)
+                        } else {
+                            res = (old.nPrepared < data.nPrepared)
+                        }
+                    }
+                } else {
+                    const compBallot = this.compareBallots(old.ballot, data.ballot);
+                    if (compBallot < 0) {
+                        res = true;
+                    } else if (compBallot == 0) {
+                        const compPrepBallot = this.compareBallots(old.preparedPrime, data.preparedPrime);
+                        if (compPrepBallot < 0) {
+                            res = true;
+                        } else (compPrepBallot == 0) {
+                            res = (old.nH < data.nH);   
+                        }
+                    }
+                }
+            }
+
+            return res;
+
+        } else {
+            return true;
+        }
+    }
+
+    isSane(data) {
+
+        if (!isQuorumSetSane(data.quorumSetHash, false)) {
+            return false;
+        }
+
+    }
+
+    processBallot(data, self) {
+        var res = false;
+        assert(data.slot == this.slot.index);
+
+        if (!this.isSane(data, self)) {
+            return false;
+        }
+
+        if (!this.isNewerStatement(data)) {
+            return false;
+        }
+
+        const validationRes = this.validateValues(data);
+        if (validationRes !== VALUE_STATE.INVALID) {
+      
+            var processed = false;
+
+            if (this.phase != BALLOT_PHASE.EXTERNALIZE) {
+                if (validationRes !== VALUE_STATE.VALID) {
+                    this.slot.setFullyValidated(false);
+                }
+
+                this.recordData(data);
+                processed = true;
+                this.advanceSlot(data);
+                res = true;
+
+            }
+
+            if (!processed) {
+
+                if (this.phase == BALLOT_PHASE.EXTERNALIZE &&
+                        this.commit.value == this.getWorkingBallot(data).value)
+
+                    this.recordData(data);
+                    res = true;
+
+                } else {
+
+                    res = false;
+
+                }
+
+            }
+
+        } else {
+
+            res = false;
+            
+        }
+
+        return res;
+    }
+
+    validateValues() {
+        const values = [];
+        switch(data.phase) {
+            case BALLOT_PHASE.PREPARE:
+                const ballot = data.ballot;
+                if (ballot.counter != 0) {
+                    values.push(ballot.value);
+                }
+                if (data.prepared) {
+                    values.insert(data.prepared.value);
+                }
+                break;
+            case BALLOT_PHASE.CONFIRM:
+                values.insert(data.ballot.value);
+                break;
+            case BALLOT_PHASE.EXTERNALIZE:
+                values.insert(data.commit.value);
+                break;
+            default:
+                return VALUE_STATE.INVALID
+        }
+        var res = VALID_STATE.VALID;
+        values.forEach(value => {
+            const validateRes = this.slot.node.validateValue(this.slot.index, value, false);
+            if (validateRes !== VALUE_STATE.VALID) {
+                res = validateRes;
+            }
+        });
+        return res;
+    }
+
+    bumpState(value, force) {
+        if (!force && this.currentBallot) {
+            return false;
+        }
+
+        const n = (this.currentBallot) ? (this.currentBallot.counter + 1) : 1;
+
+        return this.bumpStateWithCounter(value, n);
+    }
+
+    bumpStateWithCounter(value, counter) {
+        if (this.phase !== BALLOT_PHASE.PREPARE && this.phase != BALLOT_PHASE.CONFIRM) {
+            return false;
+        }
+
+        if (this.highBallot) {
+            var newBallot = new Ballot(counter, this.highBallot.value);
+        } else {
+            var newBallot = new Ballot(counter, value);
+        }
+
+        const updated = this.updateCurrentValue(newBallot);
+
+        if (updated) {
+            this.emitCurrentStateStatement();
+            this.checkHeardFromQuorum();
+        }
+
+        return updated;
+    }
+
+    updateCurrentValue(ballot) {
+        if (this.phase !== BALLOT_PHASE.PREPARE && this.phase != BALLOT_PHASE.CONFIRM) {
+            return false;
+        }
+
+        var updated = false;
+
+        if (!this.currentBallot) {
+            this.bumpToBallot(ballot, true);
+            updated = true;
+        } else {
+
+            // dbgAssert < 0 thing, not sure here...
+            // https://github.com/stellar/stellar-core/blob/master/src/scp/BallotProtocol.cpp#L419
+
+            if (this.commit && !this.areBallotsCompatible(this.commit, ballot)) {
+                return false;
+            }
+
+            const comp = this.compareBallots(this.currentBallot, ballot);
+            if (comp < 0) {
+                this.bumpToBallot(ballot, true);
+                updated = true;
+            } else {
+                // See comment at 
+                // https://github.com/stellar/stellar-core/blob/master/src/scp/BallotProtocol.cpp#L434
+                return false;
+            }
+
+        }
+
+        this.checkInvariants();
+
+        return updated;
+    }
+
+    bumpToBallot(ballot, check) {
+        assert(this.phase != BALLOT_PHASE.EXTERNALIZE);
+
+        if (check) {
+            assert(!this.currentBallot || this.compareBallots(ballot, this.currentBallot) >= 0);
+        }
+
+        const gotBumped = !this.currentBallot || (this.currentBallot.counter != ballot.counter);
+
+        this.currentBallot = new Ballot(ballot.counter, ballot.value);
+
+        if (gotBumped) {
+            this.heardFromQuorum = false;
+        }
+    }
+
+    compareBallots(b1, b2) {
+        if (b1 && b2) {
+            
+            if (b1.counter < b2.counter) {
+                return -1;
+            } else if (b2.counter < b1.counter) {
+                return 1;
+            }
+
+            // Technically this is wrong since we can't define custom ordering for our value,
+            // so this should probably use a comparitor, but meh, I'm lazy
+            if (b1.value < b2.value) {
+                return -1;
+            } else if (b2.value < b1.value) {
+                return 1;
+            } else {
+                return 0;
+            }
+
+        } else if (b1 && !b2) {
+            return 1;
+        } else if (!b1 && b2) {
+            return -1;
+        } else {
+            return 0;
+        }
+    }
+
+    areBallotsCompatible(b1, b2) {
+        return deepEquals(b1.value, b2.value);
+    }
+
+    areBallotsLessAndIncompatible(b1, b2) {
+        return (this.compareBallots(b1, b2) <= 0) && !this.areBallotsCompatible(b1, b2);
+    }
+
+    areBallotsLessAndCompatible(b1, b2) {
+        return (this.compareBallots(b1, b2) <= 0) && this.areBallotsCompatible(b1, b2);
+    }
+
+    checkInvariants() {
+        if (this.currentBallot) {
+            assert(this.currentBallot.counter !== 0);
+        }
+        if (this.prepared && this.preparedPrime) {
+            assert(this.areBallotsLessAndIncompatible(this.preparedPrime, this.prepared));   
+        } 
+        if (this.commit) {
+            assert(this.commit);
+            assert(this.areBallotsLessAndCompatible(this.commit, this.highBallot));
+            assert(this.areBallotsLessAndCompatible(this.highBallot, this.currentBallot));
+        }
+
+        switch(this.phase) {
+            case BALLOT_PHASE.PREPARE:
+                break;
+            case BALLOT_PHASE.CONFIRM:
+                assert(this.commit);
+                break;
+            case BALLOT_PHASE.EXTERNALIZE:
+                assert(this.commit);
+                assert(this.highBallot);
+                break;
+            default:
+                assert.fail();
+        }
+    }
+
+    getWorkingBallot(data) {
+        switch(data.phase) {
+            case BALLOT_PHASE.PREPARE:
+                return data.ballot;
+            case BALLOT_PHASE.CONFIRM:
+                return new Ballot(data.nCommit, data.ballot.value);
+            case BALLOT_PHASE.EXTERNALIZE:
+                return data.commit;
+            default:
+                assert.fail();
+        }
+    }
+}
+
+class Slot {
+    constructor(index, node) {
+        this.index = index;
+        this.node = node;
+
+        this.nominationProtocol = new NominationProtocol(this);
+        this.ballotProtocol = new BallotProtocol(this);
+
+    }
+
+    federatedAccept(votesNodesFn, acceptedNodesFn, vote) {
+
+        const acceptedNodeIds = acceptedNodesFn(vote);
+
+        console.log('ACCEPTED IDS', acceptedNodeIds);
+        if (this.node.isVBlocking(acceptedNodeIds)) {
+            return true;
+        }
+
+        const combinedNodeIds = votesNodesFn(vote);
+        acceptedNodeIds.filter(id => combinedNodeIds.indexOf(id) === -1)
+            .forEach(id => combinedNodeIds.push(id));
+
+        console.log('COMBINED IDS', combinedNodeIds);
+        if (this.node.isQuorumSlice(combinedNodeIds)) {
+            return true;
+        }
+
+        return false;
+
+    }
+
+    federatedRatify(acceptedNodesFn, vote) {
+        const acceptedNodeIds = acceptedNodesFn(vote);
+        return this.node.isQuorumSlice(acceptedNodeIds);
+    }
+
+    nominate(value) {
+        this.nominationProtocol.nominate(value);
+    }
+
+    processNomination(data) {
+        this.nominationProtocol.processNomination(data);
+    }
+
+    bumpState(value, force) {
+        this.ballotProtocol.bumpState(value, force);
     }
 }
 
 class Node {
     constructor(id, options) {
         this.id = id;
-        this._startTime = options.startTime;
-        this._roundLength = options.roundLength || 3000;
+        this.startTime = options.startTime;
+        this.roundLength = options.roundLength || 3000;
+        this.numSlots = options.numSlots;
         this.pendingTxs = [];
-        this._txNum = 0;
-        this._slots = {};
+        this.txNum = 0;
+        this.slots = {};
     }
 
     setQuorum(peers) {
-        if (!peers.find(peer => peer._id == this.id)) {
+        if (!peers.find(peer => peer.id == this.id)) {
             peers.push(this);
         }
-        this._peers = peers;
-        this._threshold = Math.ceil(this._peers.length*0.5);
+        this.peers = peers;
+        this.threshold = Math.ceil(this.peers.length*0.5);
     }
 
     quorumSetHash() {
@@ -349,16 +714,20 @@ class Node {
 
     start() {
         this.closeLedger();
-        setInterval(() => {
+        this.noiseInterval = setInterval(() => {
             this.makeNoise();
         }, 100);
     }
 
+    stop() {
+        clearInterval(this.noiseInterval);
+    }
+
     getSlot(id) {
-        if (!this._slots[id]) {
-            this._slots[id] = new Slot(id, this);
+        if (!this.slots[id]) {
+            this.slots[id] = new Slot(id, this);
         }
-        return this._slots[id];
+        return this.slots[id];
     }
 
     closeLedger() {
@@ -367,24 +736,28 @@ class Node {
         }
         this.pendingTxs = [];
 
-        const delay = this.nextLedgerTime() - Date.now();
-        setTimeout(() => {
-            this.closeLedger();
-        }, delay);
+        if (!this.numSlots || this.numSlots > Object.keys(this.slots).length) {
+            const delay = this.nextLedgerTime() - Date.now();
+            setTimeout(() => {
+                this.closeLedger();
+            }, delay);
+        } else {
+            this.stop()
+        }
     }
 
     nextLedgerTime() {
         const now = Date.now();
-        return now - (now % this._roundLength) + this._roundLength;
+        return now - (now % this.roundLength) + this.roundLength;
     }
 
     currentSlotId() {
-        return Math.floor((Date.now() - this._startTime)/this._roundLength)
+        return Math.floor((Date.now() - this.startTime)/this.roundLength)
     }
 
     prioritizedPeers(slotId, roundNumber) {
         slotId = slotId || this.currentSlotId();
-        return this._peers.map(peer => {
+        return this.peers.map(peer => {
             return {
                 peer: peer,
                 priority: crypto.createHash('sha256').update(String(peer.id)).update(String(slotId))
@@ -398,7 +771,7 @@ class Node {
     broadcast(topic, data) {
         setTimeout(() => {
             data.from = this.id;
-            this._peers.forEach(function(peer) {
+            this.peers.forEach(function(peer) {
                 peer.send(topic, data);
             });
         });
@@ -428,10 +801,10 @@ class Node {
 
     isQuorumSlice(nodes) {
 
-        var thresholdLeft = this._threshold;
+        var thresholdLeft = this.threshold;
 
-        for (var i = 0; i < this._peers.length; i++) {
-            const peer = this._peers[i];
+        for (var i = 0; i < this.peers.length; i++) {
+            const peer = this.peers[i];
             if (nodes.find(node => peer.id === node.id || peer.id === node)) {
                 thresholdLeft -= 1;
                 if (thresholdLeft <= 0) {
@@ -446,14 +819,14 @@ class Node {
 
     isVBlocking(nodes) {
 
-        if (this._threshold == 0) {
+        if (this.threshold == 0) {
             return false;
         }
 
-        var leftTillBlock = (1 + this._peers.length) - this._threshold;
+        var leftTillBlock = (1 + this.peers.length) - this.threshold;
 
-        for (var i = 0; i < this._peers.length; i++) {
-            const peer = this._peers[i];
+        for (var i = 0; i < this.peers.length; i++) {
+            const peer = this.peers[i];
             if (nodes.find(node => peer.id === node.id || peer.id === node)) {
                 leftTillBlock -= 1;
                 if (leftTillBlock <= 0) {
@@ -466,11 +839,21 @@ class Node {
 
     }
 
+    combineCandidates(slotIndex, candidates) {
+        var longest = [];
+        candidates.forEach(candidate => {
+            if (candidate.length > longest.length) {
+                longest = candidate;
+            }
+        });
+        return longest;
+    }
+
     makeNoise() {
         if (Math.random() > .90) {
             this.broadcast('tx', {
                 id: this.id,
-                tx: this._txNum++,
+                tx: this.txNum++,
                 timestamp: Date.now()
             });
         }
@@ -479,7 +862,8 @@ class Node {
 
 const startTime = Date.now();
 const options = {
-    startTime: startTime
+    startTime: startTime,
+    numSlots: 1
 };
 const n1 = new Node(1, options);
 const n2 = new Node(2, options);
