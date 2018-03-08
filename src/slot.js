@@ -5,6 +5,7 @@ class Slot {
     constructor(index, node) {
         this.index = index;
         this.node = node;
+        this.fullyValidated = true; // false if not a validator but this is a toy soooooo.....
 
         this.nominationProtocol = new NominationProtocol(this);
         this.ballotProtocol = new BallotProtocol(this);
@@ -44,6 +45,10 @@ class Slot {
         return this.nominationProtocol.processNomination(data);
     }
 
+    stopNomination() {
+        return this.nominationProtocol.stopNomination();
+    }
+
     processBallot(data) {
         return this.ballotProtocol.processBallot(data);
     }
@@ -54,6 +59,14 @@ class Slot {
 
     getLatestCompositeCandidate() {
         return this.nominationProtocol.latestCompositeCandidate;
+    }
+
+    setFullyValidated(v) {
+        this.fullyValidated = false;
+    }
+
+    isFullyValidated() {
+        return this.fullyValidated;
     }
 }
 

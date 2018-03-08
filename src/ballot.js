@@ -75,11 +75,16 @@ class BallotProtocol {
                     if (compBallot < 0) {
                         res = true;
                     } else if (compBallot == 0) {
-                        const compPrepBallot = this.compareBallots(old.preparedPrime, data.preparedPrime);
-                        if (compPrepBallot < 0) {
-                            res = true;
-                        } else if (compPrepBallot == 0) {
-                            res = (old.nH < data.nH);   
+                        const compPrepBallot = this.compareBallots(old.prepared, data.prepared);
+                        if (compBallot < 0) {
+                            return true;
+                        } else {
+                            const compPrepPrimeBallot = this.compareBallots(old.preparedPrime, data.preparedPrime);
+                            if (compPrepBallot < 0) {
+                                res = true;
+                            } else if (compPrepBallot == 0) {
+                                res = (old.nH < data.nH);   
+                            }
                         }
                     }
                 }
@@ -96,7 +101,7 @@ class BallotProtocol {
 
         var res = true;
         /*
-        Need to figure out how underlying quorum set hash is populated
+        TODO Need to figure out how underlying quorum set hash is populated
         var res = isQuorumSetSane(data.quorumSetHash, false);
         if (!res) {
             return false;
@@ -116,7 +121,7 @@ class BallotProtocol {
                 if (!isOK) {
                     res = false;
                     console.log(data);
-                    console.log(`[${this.slot.node.id}:${this.slot.index}] Malformed prepare`);
+                    console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Malformed prepare`);
                 }
                 break;
 
@@ -127,8 +132,9 @@ class BallotProtocol {
                 res = res && (data.nCommit <= data.nH);
 
                 if (!res) {
-                    console.log(`[${this.slot.node.id}:${this.slot.index}] Malformed confirm`);
+                    console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Malformed confirm`);
                 }
+                break;
 
             case BALLOT_PHASE.EXTERNALIZE:
 
@@ -136,8 +142,9 @@ class BallotProtocol {
                 res = res && (data.nH >= data.commit.counter);
 
                 if (!res) {
-                    console.log(`[${this.slot.node.id}:${this.slot.index}] Malformed externalize`);
+                    console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Malformed externalize`);
                 }
+                break;
 
             default:
                 assert.fail()
@@ -148,18 +155,25 @@ class BallotProtocol {
     }
 
     processBallot(data, self) {
+
+        console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Process ballot from ${data.from}`);
+        console.log(data);
+
         var res = false;
         assert(data.slot == this.slot.index);
 
         if (!this.isSane(data, self)) {
+            console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Not sane`)
             return false;
         }
 
         if (!this.isNewerStatement(data)) {
+            console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Not newer`)
             return false;
         }
 
         const validationRes = this.validateValues(data);
+        console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Ballot validation ${validationRes}`)
         if (validationRes !== VALUE_STATE.INVALID) {
       
             var processed = false;
@@ -185,7 +199,8 @@ class BallotProtocol {
                     res = true;
 
                 } else {
-
+            
+                    console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Not processed`)
                     res = false;
 
                 }
@@ -285,7 +300,7 @@ class BallotProtocol {
 
             var didBump = false
             do {
-                didBump = attemptBump();
+                didBump = this.attemptBump();
                 didWork = didBump || didWork;
             } while (didBump);
 
@@ -294,6 +309,11 @@ class BallotProtocol {
             }
         }
 
+        this.currentMessageLevel -= 1;
+
+        if (didWork) {
+            this.sendLatestStatement();
+        }
     }
 
     getPrepareCandidates(hint) {
@@ -347,7 +367,7 @@ class BallotProtocol {
                             if (this.areBallotsCompatible(ballot, other.ballot)) {
                                 candidates.push(ballot);
                                 if (other.nPrepared < ballot.counter) {
-                                    candidates.push(new Ballot(other.nPrepared, val));
+                                    candidates.push(new Ballot(other.nPrepared, value));
                                 }
                             }
                             break;
@@ -446,7 +466,7 @@ class BallotProtocol {
                (this.preparedPrime &&
                 this.areBallotsLessAndIncompatible(this.highBallot, this.preparedPrime)))
             {
-                assert(this.phase = BALLOT_PHASE.PREPARE)
+                assert(this.phase == BALLOT_PHASE.PREPARE)
                 this.commit = null;
                 didWork = true;
             }
@@ -465,7 +485,7 @@ class BallotProtocol {
         if (this.prepared) {
             const comp = this.compareBallots(this.prepared, ballot);
             if (comp < 0) {
-                if (!this.areBallotCompatible(this.prepared, ballot)) {
+                if (!this.areBallotsCompatible(this.prepared, ballot)) {
                     this.preparedPrime = this.prepared.clone();
                 }
                 this.prepared = ballot.clone();
@@ -589,12 +609,294 @@ class BallotProtocol {
         }
 
         if (this.phase == BALLOT_PHASE.CONFIRM) {
-            if (!this.ballotsAreCompatible(ballot, this.highBallot)) {
+            if (!this.areBallotsCompatible(ballot, this.highBallot)) {
                 return false;
             }
         }
 
-        // TODO WORK FROM HERE THIS IS WHERE YOU STOPPED
+        const pred = (interval) => {
+            return this.slot.federatedAccept(
+                (cur) => {
+                    return Object.values(this.otherBallots)
+                        .filter(other => {
+                            switch(other.phase) {
+                                case BALLOT_PHASE.PREPARE:
+                                    if (this.areBallotsCompatible(ballot, other.ballot) && other.nC != 0) {
+                                        return other.nC <= cur[0] && cur[1] <= other.nH;
+                                    }
+                                    break;
+                                case BALLOT_PHASE.CONFIRM:
+                                    if (this.areBallotsCompatible(ballot, other.ballot)) {
+                                        return other.nCommit <= cur[0];
+                                    }
+                                    break;
+                                case BALLOT_PHASE.EXTERNALIZE:
+                                    if (this.areBallotsCompatible(ballot, other.commit)) {
+                                        return other.commit.counter <= cur[0];
+                                    }
+                                default:
+                                    assert.fail();
+                            }
+                        })
+                        .map(other => other.from);
+                },
+                (interval) => {
+                    return this.commitPredicate(ballot, interval);
+                },
+                interval
+            );
+        }
+
+        const boundaries = this.getCommitBoundariesFromStatements(ballot);
+
+        if (boundaries.length == 0) {
+            return false;
+        }
+
+        const candidate = this.findExtendedInterval(boundaries, pred);
+
+        var res = false;
+
+        if (candidate[0] != 0) {
+            if (this.phase != BALLOT_PHASE.CONFIRM || candidate[1] > this.highBallot.counter) {
+                const c = new Ballot(candidate[0], ballot.value);
+                const h = new Ballot(candidate[1], ballot.value);
+                res = this.setAcceptCommit(c, h);
+            }
+        }
+
+        return res;
+    }
+
+    findExtendedInterval(boundaries, pred) {
+        var candidate = [0,0];
+        for (var i = 0; i < boundaries.length; i++) {
+            const b = boundaries[i];
+
+            var cur = [0,0];
+            if (candidate[0] == 0) {
+                cur = [b,b];
+            } else if (b > candidate[1]) {
+                continue;
+            } else {
+                cur[0] = b;
+                cur[1] = candidate[1];
+            }
+
+            if (pred(cur)) {
+                candidate = cur;
+            } else if (candidate[0] != 0) {
+                break;
+            }
+        }
+        return candidate;
+    }
+
+    commitPredicate(ballot, check) {
+        return Object.values(this.otherBallots)
+            .filter(other => {
+                switch(other.phase) {
+                    case BALLOT_PHASE.PREPARE:
+                        break;
+                    case BALLOT_PHASE.CONFIRM:
+                        if (this.areBallotsCompatible(ballot, other.ballot)) {
+                            return other.nCommit <= check[0] && check[1] <= other.nH;
+                        }
+                    case BALLOT_PHASE.EXTERNALIZE:
+                        if (this.areBallotsCompatible(ballot, other.commit)) {
+                            res = other.commit.counter <= check[0];
+                        }
+                    default:
+                        assert.fail()
+                }
+            })
+            .map(other => other.from);
+    }
+
+    setAcceptCommit(c, h) {
+        var didWork = false;
+
+        if (!this.highBallot || !this.commit || this.compareBallots(this.highBallot, h) != 0 ||
+                this.compareBallots(this.commit, c) != 0) {
+            this.commit = c.clone();
+            this.highBallot = h.clone();
+            didWork = true;
+        }
+
+        if (this.phase == BALLOT_PHASE.PREPARE) {
+            this.phase = BALLOT_PHASE.CONFIRM;
+            if (this.currentBallot && !this.areBallotsLessAndCompatible(h, this.currentBallot)) {
+                this.bumpToBallot(h, false);
+            }
+            this.preparedPrime = null;
+            didWork = true;
+        }
+
+        if (didWork) {
+            this.updateCurrentIfNeeded();
+            this.emitCurrentStateStatement();
+        }
+
+        return didWork;
+    }
+
+    attemptConfirmCommit(hint) {
+        
+        if (this.phase != BALLOT_PHASE.CONFIRM || !this.highBallot || !this.commit) {
+            return false;
+        }
+
+        var ballot;
+        switch (hint.phase) {
+            case BALLOT_PHASE.PREPARE:
+                return false;
+            case BALLOT_PHASE.CONFIRM:
+                ballot = new Ballot(hint.nH, hint.ballot.value);
+                break;
+            case BALLOT_PHASE.EXTERNALIZE:
+                ballot = new Ballot(hint.nH, hint.commit.value);
+                break;
+            default:
+                assert.fail();
+        }
+
+        if (!this.areBallotsCompatible(ballot, this.commit)) {
+            return false;
+        }
+
+        const boundaries = this.getCommitBoundariesFromStatements(ballot);
+
+        const pred = (cur) => {
+            return this.slot.federatedRatify(
+                (interval) => {
+                    const nodes = this.commitPredicate(ballot, interval);
+                    console.log(nodes);
+                    return nodes;
+                },
+                cur
+            )
+        }
+
+        const candidate = this.findExtendedInterval(boundaries, pred);
+
+        console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Boundaries ${boundaries}`);
+
+        console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Candidate ${candidate}`);
+        console.log(this.highBallot);
+
+        var res = (candidate[0] != 0);
+        if (res) {
+            const c = new Ballot(candidate[0], ballot.value);
+            const h = new Ballot(candidate[1], ballot.value);
+            return this.setConfirmCommit(c, h);
+        }
+        return res;
+    }
+
+    setConfirmCommit(c, h) {
+
+        this.commit = c.clone();
+        this.highBallot = h.clone();
+        this.updateCurrentIfNeeded();
+
+        this.phase = BALLOT_PHASE.EXTERNALIZE;
+
+        this.emitCurrentStateStatement();
+
+        this.slot.stopNomination();
+
+        this.slot.node.valueExternalized(this.slot.index, this.commit.value);
+
+        return true;
+    }
+
+    attemptBump() {
+        if (this.phase == BALLOT_PHASE.PREPARE || this.phase == BALLOT_PHASE.CONFIRM) {
+            var allCounters = [];
+            Object.values(this.otherBallots)
+                .forEach(other => {
+                    switch (other.phase) {
+                        case BALLOT_PHASE.PREPARE:
+                        case BALLOT_PHASE.CONFIRM:
+                            allCounters.push(other.ballot.counter);
+                            break;
+                        case BALLOT_PHASE.EXTERNALIZE:
+                            allCounters.push(Number.MAX_SAFE_INTEGER);
+                            break;
+                        default:
+                            assert.fail();
+                    }
+                });
+
+            var targetCounter = this.currentBallot ? this.currentBallot.counter : 0;
+            allCounters.push(targetCounter);
+
+            allCounters = utils.deepUnique(allCounters).sort();
+
+            for (var i = 0; i < allCounters.length; i++) {
+                const n = allCounters[i];
+                if (n < targetCounter) {
+                   break; 
+                }
+
+                const nodes = Object.values(this.otherBallots)
+                    .filter(other => {
+                        if (other.phase == BALLOT_PHASE.PREPARE || other.phase == BALLOT_PHASE.CONFIRM) {
+                            return n < other.ballot.counter;
+                        } else {
+                            return n != Number.MAX_SAFE_INTEGER;
+                        }
+                    })
+                    .map(other => other.from);
+                const vBlocking = this.slot.node.isVBlocking(nodes);
+
+                if (n == targetCounter) {
+                    if (!vBlocking) {
+                        break;
+                    }
+                } else {
+                    if (!vBlocking) {
+                        return this.abandonBallot(n);
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    getCommitBoundariesFromStatements(ballot) {
+        const res = [];
+        Object.values(this.otherBallots)
+            .forEach(other => {
+                switch(other.phase) {
+                    case BALLOT_PHASE.PREPARE:
+                        if (this.areBallotsCompatible(ballot, other.ballot)) {
+                            if (other.nC) {
+                                res.push(other.nC);
+                                res.push(other.nH);
+                            }
+                        }
+                        break;
+                    case BALLOT_PHASE.CONFIRM:
+                        if (this.areBallotsCompatible(ballot, other.ballot)) {
+                            res.push(other.nCommit);
+                            res.push(other.nH);
+                        }
+                        break;
+                    case BALLOT_PHASE.EXTERNALIZE:
+                        if (this.areBallotsCompatible(ballot, other.commit)) {
+                            res.push(other.commit.counter);
+                            res.push(other.nH);
+                            res.push(Number.MAX_SAFE_INTEGER);
+                        }
+                        break;
+                    default:
+                        assert.fail();
+                }
+            });
+        console.log(res);
+        return utils.deepUnique(res).sort();
     }
 
     updateCurrentIfNeeded() {
@@ -608,11 +910,14 @@ class BallotProtocol {
 
         const canEmit = !!this.currentBallot;
 
-        const lastStatement = this.otherBallots[this.slot.node.id];       
+        const lastStatement = this.otherBallots[this.slot.node.id];
 
-        if (!lastStatement || !deepEquals(lastStatement, statement)) {
+        if (!lastStatement || !utils.deepEquals(lastStatement, statement)) {
             if (this.slot.processBallot(statement)) {
-                if (canEmit && (!lastStatement || this.isNewerStatement(statement))) {
+                console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Ballot sending`)
+                console.log(canEmit, !lastStatement, this.isNewerStatement(statement))
+                if (canEmit && (!lastStatement || this.isNewerStatement(statement, this.lastStatement))) {
+                    console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Ballot sending`)
                     this.lastStatement = statement;
                     this.sendLatestStatement();
                 }
@@ -640,6 +945,7 @@ class BallotProtocol {
                 }
             case BALLOT_PHASE.CONFIRM:
                 assert(this.areBallotsLessAndCompatible(this.commit, this.highBallot));
+                console.log("PREPARED", this.prepared);
                 return {
                     phase: BALLOT_PHASE.CONFIRM,
                     quorumSetHash: this.slot.node.quorumSetHash(),
@@ -666,9 +972,14 @@ class BallotProtocol {
     }
 
     sendLatestStatement() {
+        console.log("HERE", this.currentMessageLevel, this.lastStatement)
         if (this.currentMessageLevel == 0 && this.lastStatement && this.slot.isFullyValidated()) {
+            console.log("HERE")
             if (!this.lastStatementEmit || this.lastStatement != this.lastStatementEmit) {
+                console.log("HERE")
                 this.lastStatementEmit = this.lastStatement;
+                console.log(`[${this.slot.node.id}:${this.slot.index}:${this.phase}] Emit stmt`);
+                console.log(this.lastStatementEmit);
                 this.slot.node.broadcast(this.lastStatementEmit.phase, this.lastStatementEmit);
             }
         }
@@ -676,7 +987,7 @@ class BallotProtocol {
 
     checkHeardFromQuorum() {
         if (this.currentBallot) {
-            const nodes = this.otherBallots
+            const nodes = Object.values(this.otherBallots)
                 .filter(other => {
                     if (other.phase == BALLOT_PHASE.PREPARE) {
                         return this.currentBallot.counter <= other.ballot.counter;

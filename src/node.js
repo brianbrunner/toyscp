@@ -123,7 +123,7 @@ class Node {
 
         for (var i = 0; i < this.peers.length; i++) {
             const peer = this.peers[i];
-            if (nodes.find(node => peer.id === node.id || peer.id === node)) {
+            if (nodes.find(node => peer.id === node.id || peer.id === node.from || peer.id == node)) {
                 thresholdLeft -= 1;
                 if (thresholdLeft <= 0) {
                     return true;
@@ -145,7 +145,7 @@ class Node {
 
         for (var i = 0; i < this.peers.length; i++) {
             const peer = this.peers[i];
-            if (nodes.find(node => peer.id === node.id || peer.id === node)) {
+            if (nodes.find(node => peer.id === node.id || peer.id === node.from || peer.id == node)) {
                 leftTillBlock -= 1;
                 if (leftTillBlock <= 0) {
                     return true;
@@ -170,6 +170,11 @@ class Node {
     validateValue(value) {
         console.log(value);
         return VALUE_STATE.VALID;
+    }
+
+    valueExternalized(slot, value) {
+        const valueHash = crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+        console.log(`[Node ${this.id}] For slot ${slot} externalized value with hash ${valueHash}`);
     }
 
     makeNoise() {
