@@ -14,6 +14,7 @@ class Node {
         this.pendingTxs = [];
         this.txNum = 0;
         this.slots = {};
+        this.onExternalize = options.onExternalize;
     }
 
     setQuorum(peers) {
@@ -87,11 +88,11 @@ class Node {
     }
 
     broadcast(topic, data) {
-        setTimeout(() => {
-            data.from = this.id;
-            this.peers.forEach(function(peer) {
+        data.from = this.id;
+        this.peers.forEach(function(peer) {
+            setTimeout(() => {
                 peer.send(topic, data);
-            });
+            }, 1000+500*Math.random());
         });
     }
 
@@ -175,6 +176,7 @@ class Node {
     valueExternalized(slot, value) {
         const valueHash = crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
         console.log(`[Node ${this.id}] For slot ${slot} externalized value with hash ${valueHash}`);
+        this.onExternalize && this.onExternalize(this, slot, value);
     }
 
     makeNoise() {
