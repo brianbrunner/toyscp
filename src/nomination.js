@@ -156,8 +156,8 @@ class NominationProtocol {
 
                     if (newCandidates) {
                         console.log(`New candidates for node ${this.slot.node.id} for slot ${this.slot.index}`);
-                        const latestCompositeCandidate = this.slot.node.combineCandidates(this.slot.index, this.candidates);
-                        this.slot.bumpState(latestCompositeCandidate, false);
+                        this.latestCompositeCandidate = this.slot.node.combineCandidates(this.slot.index, this.candidates);
+                        this.slot.bumpState(this.latestCompositeCandidate, false);
                     }
 
                     if (!modified && !newCandidates) {

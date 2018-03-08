@@ -1,6 +1,9 @@
 const crypto = require('crypto');
 
 const Slot = require('./slot');
+const utils = require('./utils');
+
+const VALUE_STATE = utils.VALUE_STATE;
 
 class Node {
     constructor(id, options) {
@@ -162,6 +165,11 @@ class Node {
             }
         });
         return longest;
+    }
+
+    validateValue(value) {
+        console.log(value);
+        return VALUE_STATE.VALID;
     }
 
     makeNoise() {

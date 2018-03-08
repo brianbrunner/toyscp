@@ -41,11 +41,19 @@ class Slot {
     }
 
     processNomination(data) {
-        this.nominationProtocol.processNomination(data);
+        return this.nominationProtocol.processNomination(data);
+    }
+
+    processBallot(data) {
+        return this.ballotProtocol.processBallot(data);
     }
 
     bumpState(value, force) {
         this.ballotProtocol.bumpState(value, force);
+    }
+
+    getLatestCompositeCandidate() {
+        return this.nominationProtocol.latestCompositeCandidate;
     }
 }
 
